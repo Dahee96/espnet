@@ -1,0 +1,85 @@
+# ============================================================
+# Speech Cleaner — Stage 2: Vocoder Pretrain
+# ============================================================
+# Trains HiFi-GAN + Snake vocoder on GROUND-TRUTH clean SSL
+# features extracted from clean reference waveforms.
+#
+# Data flow:
+#   clean 48kHz wav
+#     → downsample to 16kHz (inside model)
+#     → SSL encoder (frozen, no LoRA needed yet)
+#     → ground-truth SSL features  [B, T_ssl, 1024]
+#     → vocoder
+#     → 48kHz reconstructed wav
+#   Loss: mel-L1 + adversarial + feature matching
+#
+# NOTE: input data MUST be 48 kHz only (Sidon paper §3.4).
+#       24 kHz LibriTTS-R is upsampled in run.sh Stage 3
+#       before this training stage runs.
+# ============================================================
+
+# ── SSL encoder ──────────────────────────────────────────────
+# Same model tag as Stage 1.
+# In Stage 2 we do NOT load Stage 1 weights — the SSL encoder
+# here is only used to extract GT SSL features from clean speech
+# (extract_clean_features(), no gradient, no LoRA needed).
+ssl_encoder: w2v_bert2          # choices: w2v_bert2 | xeus | wavlm
+ssl_encoder_conf:
+    model_tag: facebook/w2v-bert-2.0
+    freeze_base: true
+
+use_flash_attention: false #true
+
+target_layer: 8
+lora_rank: 64                   # unused in Stage 2 (encoder frozen, no LoRA fwd)
+lora_alpha: 16
+lora_dropout: 0.1
+input_sr: 16000
+
+# ── Vocoder architecture ─────────────────────────────────────
+ssl_dim: 1024                   # w2v-BERT 2.0 hidden_size
+                                # WavLM-large  → 1024
+                                # XEUS         → check model config
+
+# ── Stage selector ───────────────────────────────────────────
+use_predicted_feat: false       # ← Stage 2: ground-truth SSL features
+vocoder_type: dac       # choices: hifigan | dac
+
+# ── Loss weights ─────────────────────────────────────────────
+# Sidon: regression_loss=15.0, adv_gen=2.0, adv_feature=1.0
+mel_loss_weight: 15.0           # dominant term (following HiFi-GAN paper >> 45.0)
+adv_loss_weight: 2.0
+fm_loss_weight: 1.0
+
+# ── Optimizers (GANTrainer: two optimizers) ──────────────────
+optim: adamw
+optim_conf:
+    lr: 1.0e-4
+    betas: [0.8, 0.98]
+    weight_decay: 0.01
+
+scheduler: exponentiallr
+scheduler_conf:
+    gamma: 0.999996              # applied to both generator and discriminator
+
+# ── Training ─────────────────────────────────────────────────
+# Paper: 140k steps, batch_size=32, 8×H200, ~2 days
+max_epoch: 15 # =13 epoch
+batch_type: unsorted
+batch_size: 8                   # per GPU  (×8 GPUs = effective bs 32)
+grad_clip: 1.0
+num_workers: 4
+seed: 42
+
+# ── Validation ───────────────────────────────────────────────
+valid_batch_size: 8
+best_model_criterion:
+    -   - valid
+        - loss_G
+        - min
+keep_nbest_models: 3
+log_interval: 100
+
+use_amp: true # a100 > bfloat16
+max_duration: 20.0  # random crop threshold (seconds) in forward()
+

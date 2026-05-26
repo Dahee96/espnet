@@ -55,6 +55,9 @@ def collect_stats(
                 for name in batch:
                     if name.endswith("_lengths"):
                         continue
+                    # Skip non-tensor values (e.g. ssl_inputs dicts)
+                    if not isinstance(batch[name], __import__("torch").Tensor):
+                        continue
                     for i, (key, data) in enumerate(zip(keys, batch[name])):
                         if f"{name}_lengths" in batch:
                             lg = int(batch[f"{name}_lengths"][i])

@@ -1,0 +1,12 @@
+exp/
+data/
+dump/
+downloads/
+wav/
+*.log
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+xeus_checkpoint/

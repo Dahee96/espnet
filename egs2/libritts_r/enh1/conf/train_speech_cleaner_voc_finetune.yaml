@@ -1,0 +1,89 @@
+# ============================================================
+# Speech Cleaner — Stage 3: Vocoder Finetune
+# ============================================================
+# Finetunes the vocoder using PREDICTED SSL features from the
+# Stage 1 feature predictor, bridging the train/test gap.
+#
+# Data flow:
+#   noisy 16kHz wav
+#     → SSL encoder + LoRA  (loaded from Stage 1, FROZEN)
+#     → predicted SSL features  [B, T_ssl, 1024]
+#     → vocoder  (warm-started from Stage 2)
+#     → 48kHz restored wav
+#   Loss: mel-L1 + adversarial + feature matching
+#         (same losses as Stage 2, but features now come from
+#          the noisy-input predictor, not from clean speech)
+#
+# How Stage 3 differs from Stage 2:
+#   use_predicted_feat: true   (vs false in Stage 2)
+#   fp_model_path: <Stage 1 checkpoint>  (loaded + frozen)
+#   vocoder warm-started via --init_param in run.sh
+# ============================================================
+
+# ── SSL encoder (same tag as Stage 1/2) ──────────────────────
+ssl_encoder: w2v_bert2
+ssl_encoder_conf:
+    model_tag: facebook/w2v-bert-2.0
+    freeze_base: true
+
+use_flash_attention: false #true
+
+target_layer: 8
+lora_rank: 64
+lora_alpha: 16
+lora_dropout: 0.1
+input_sr: 16000
+
+# ── Vocoder architecture ─────────────────────────────────────
+ssl_dim: 1024
+
+# ── Stage selector ───────────────────────────────────────────
+use_predicted_feat: true        # ← Stage 3: predicted SSL features
+vocoder_type: dac       # choices: hifigan | dac
+                                #   (noisy waveform → SSL encoder → predicted feat)
+
+# fp_model_path is passed via --fp_model_path in run.sh
+# (not set here to avoid hardcoding experiment directory paths)
+
+# ── Loss weights ─────────────────────────────────────────────
+# Sidon: regression_loss=15.0, adv_gen=2.0, adv_feature=1.0
+mel_loss_weight: 15.0
+adv_loss_weight: 2.0
+fm_loss_weight: 1.0
+
+# ── Optimizers ───────────────────────────────────────────────
+optim: adamw
+optim_conf:
+    lr: 1.0e-4
+    betas: [0.8, 0.98]
+    weight_decay: 0.01
+
+scheduler: exponentiallr
+scheduler_conf:
+    gamma: 0.999996             # Sidon: 0.999996
+
+# ── Training ─────────────────────────────────────────────────
+# Paper: 280k steps, batch_size=32, 8×H200, ~4 days
+# More epochs than Stage 2 because predicted features introduce
+# noise that the vocoder needs more time to adapt to.
+max_epoch: 30 # =26 epoch
+batch_type: unsorted
+batch_size: 8                   # per GPU  (×8 GPUs = effective bs 32)
+grad_clip: 1.0
+num_workers: 4
+seed: 42
+
+# ── Validation ───────────────────────────────────────────────
+valid_batch_size: 8
+best_model_criterion:
+    -   - valid
+        - loss_G
+        - min
+keep_nbest_models: 3
+log_interval: 100
+
+# use_amp: false #true(fp16)
+use_amp: true # a100 > bfloat16
+
+max_duration: 20.0  # random crop threshold (seconds) in forward()
+

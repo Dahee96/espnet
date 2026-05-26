@@ -1,0 +1,15 @@
+# egs2/libritts_r/enh1/db.sh
+export DATASET_LIBRITTS_R=/DB/LibriTTS_R
+export DATASET_JVS=""
+export DATASET_FLEURS_R=""
+export DATASET_VCTK=/DB/VCTK_DEMAND
+export DATASET_EARS=/DB/ears
+export DATASET_EXPRESSO=""
+export DATASET_HIFICAPTAIN=""
+export DATASET_JSUT=""
+export DATASET_BIBLETTS=""
+export LIBRITTS=/DB/LibriTTS
+export NOISE_WHAM=/DB/high_res_wham/audio
+export NOISE_AUDIOSET=""
+export NOISE_FSD50K=""
+export NOISE_SCWIND=""
