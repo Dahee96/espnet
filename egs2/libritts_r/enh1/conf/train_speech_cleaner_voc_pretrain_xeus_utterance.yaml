@@ -1,34 +1,36 @@
 # ============================================================
-# Speech Cleaner — Stage 3: Vocoder Finetune
+# Speech Cleaner — Stage 2: Vocoder Pretrain
 # ============================================================
-# Finetunes the vocoder using PREDICTED SSL features from the
-# Stage 1 feature predictor, bridging the train/test gap.
+# Trains HiFi-GAN + Snake vocoder on GROUND-TRUTH clean SSL
+# features extracted from clean reference waveforms.
 #
 # Data flow:
-#   noisy 16kHz wav
-#     → SSL encoder + LoRA  (loaded from Stage 1, FROZEN)
-#     → predicted SSL features  [B, T_ssl, 1024]
-#     → vocoder  (warm-started from Stage 2)
-#     → 48kHz restored wav
+#   clean 48kHz wav
+#     → downsample to 16kHz (inside model)
+#     → SSL encoder (frozen, no LoRA needed yet)
+#     → ground-truth SSL features  [B, T_ssl, 1024]
+#     → vocoder
+#     → 48kHz reconstructed wav
 #   Loss: mel-L1 + adversarial + feature matching
-#         (same losses as Stage 2, but features now come from
-#          the noisy-input predictor, not from clean speech)
 #
-# How Stage 3 differs from Stage 2:
-#   use_predicted_feat: true   (vs false in Stage 2)
-#   fp_model_path: <Stage 1 checkpoint>  (loaded + frozen)
-#   vocoder warm-started via --init_param in run.sh
+# NOTE: input data MUST be 48 kHz only (Sidon paper §3.4).
+#       24 kHz LibriTTS-R is upsampled in run.sh Stage 3
+#       before this training stage runs.
 # ============================================================
 
-# ── SSL encoder (same tag as Stage 1/2) ──────────────────────
-ssl_encoder: w2v_bert2
+# ── SSL encoder ──────────────────────────────────────────────
+# Same model tag as Stage 1.
+# In Stage 2 we do NOT load Stage 1 weights — the SSL encoder
+# here is only used to extract GT SSL features from clean speech
+# (extract_clean_features(), no gradient, no LoRA needed).
+ssl_encoder: xeus          # choices: w2v_bert2 | xeus | wavlm
 ssl_encoder_conf:
-    model_tag: facebook/w2v-bert-2.0
+    model_tag: xeus_checkpoint
     freeze_base: true
     use_flash_attention: true
 
-target_layer: 8
-lora_rank: 64
+target_layer: 10
+lora_rank: 64                   # unused in Stage 2 (encoder frozen, no LoRA fwd)
 lora_alpha: 16
 lora_dropout: 0.1
 input_sr: 16000
@@ -40,44 +42,45 @@ degrade_prob: 0.5                # probability per degradation type (Sidon: 0.5)
 online_degradation: true         # set false to use pre-degraded wav.scp
 
 # ── Vocoder architecture ─────────────────────────────────────
-ssl_dim: 1024
-
-use_multilayer_feat: true #false
+ssl_dim: 1024                   # w2v-BERT 2.0 hidden_size
+                                # WavLM-large  → 1024
+                                # XEUS         → check model config
+use_multilayer_loss: true
+use_multilayer_feat: true
 multilayer_mode: all
+layer_weighting: utterance_dynamic  # uniform | global_learnable | utterance_dynamic | frame_dynamic
 # ── Stage selector ───────────────────────────────────────────
-use_predicted_feat: true        # ← Stage 3: predicted SSL features
+use_predicted_feat: false       # ← Stage 2: ground-truth SSL features
 vocoder_type: dac       # choices: hifigan | dac
-                                #   (noisy waveform → SSL encoder → predicted feat)
-
 
 # ── Loss weights ─────────────────────────────────────────────
 # Sidon: regression_loss=15.0, adv_gen=2.0, adv_feature=1.0
-mel_loss_weight: 15.0
+mel_loss_weight: 15.0           # dominant term (following HiFi-GAN paper >> 45.0)
 adv_loss_weight: 2.0
 fm_loss_weight: 1.0
 
-# ── Optimizers ───────────────────────────────────────────────
+# ── Optimizers (GANTrainer: two optimizers) ──────────────────
 optim: adamw
 optim_conf:
-    lr: 1.0e-4
+    lr:  2.0e-4 #1.0e-4
     betas: [0.8, 0.98]
     weight_decay: 0.01
 
 scheduler: exponentiallr
 scheduler_conf:
-    gamma: 0.999996             # Sidon: 0.999996
+    gamma: 0.999992 #0.999996              # applied to both generator and discriminator
 
 # ── Training ─────────────────────────────────────────────────
-# Paper: 280k steps, batch_size=32, 8×H200, ~4 days
-max_epoch: 20 
+# Paper: 140k steps, batch_size=32, 8×H200, ~2 days
+max_epoch: 50 #35
 batch_type: unsorted
-batch_size: 8                   # per GPU  (×8 GPUs = effective bs 32)
+batch_size: 32 #8                   # per GPU  (×8 GPUs = effective bs 32)
 grad_clip: 1.0
 num_workers: 16
 seed: 42
 
 # ── Validation ───────────────────────────────────────────────
-valid_batch_size: 8
+valid_batch_size: 32 #8
 # best_model_criterion:
 #     -   - valid
 #         - loss_G
@@ -86,11 +89,15 @@ best_model_criterion:
     -   - valid
         - dnsmos_ovrl
         - max
-keep_nbest_models: 3
+    -   - valid
+        - stoi
+        - max
+    -   - valid
+        - loss_G
+        - min
+keep_nbest_models: 5
 log_interval: 100
 
-# use_amp: false #true(fp16)
 use_amp: false # espnet gan_trainer.py uses float16
-
-max_duration: 20.0  # random crop threshold (seconds) in forward()
+max_duration: 2.0  # random crop threshold (seconds) in forward()
 num_att_plot: 0

@@ -27,20 +27,28 @@ ssl_encoder: w2v_bert2          # choices: w2v_bert2 | xeus | wavlm
 ssl_encoder_conf:
     model_tag: facebook/w2v-bert-2.0
     freeze_base: true
+    use_flash_attention: true
 
-use_flash_attention: false #true
-
+# use_flash_attention: false #true
 target_layer: 8
 lora_rank: 64                   # unused in Stage 2 (encoder frozen, no LoRA fwd)
 lora_alpha: 16
 lora_dropout: 0.1
 input_sr: 16000
 
+# ── On-the-fly degradation ────────────────────────────────────
+noise_dir: data/noise_pool       # populated by data.sh from NOISE_* in db.sh
+rir_dir:   data/rir_pool         # populated by Stage 3 (prepare_rir_pool.py)
+degrade_prob: 0.5                # probability per degradation type (Sidon: 0.5)
+online_degradation: true         # set false to use pre-degraded wav.scp
+
 # ── Vocoder architecture ─────────────────────────────────────
 ssl_dim: 1024                   # w2v-BERT 2.0 hidden_size
                                 # WavLM-large  → 1024
                                 # XEUS         → check model config
 
+use_multilayer_feat: false #true
+multilayer_mode: all
 # ── Stage selector ───────────────────────────────────────────
 use_predicted_feat: false       # ← Stage 2: ground-truth SSL features
 vocoder_type: dac       # choices: hifigan | dac
@@ -64,11 +72,11 @@ scheduler_conf:
 
 # ── Training ─────────────────────────────────────────────────
 # Paper: 140k steps, batch_size=32, 8×H200, ~2 days
-max_epoch: 15 # =13 epoch
+max_epoch: 10 
 batch_type: unsorted
 batch_size: 8                   # per GPU  (×8 GPUs = effective bs 32)
 grad_clip: 1.0
-num_workers: 4
+num_workers: 16 
 seed: 42
 
 # ── Validation ───────────────────────────────────────────────
@@ -80,6 +88,6 @@ best_model_criterion:
 keep_nbest_models: 3
 log_interval: 100
 
-use_amp: true # a100 > bfloat16
+use_amp: false # espnet gan_trainer.py uses float16
 max_duration: 20.0  # random crop threshold (seconds) in forward()
-
+num_att_plot: 0

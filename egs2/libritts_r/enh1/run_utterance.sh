@@ -24,7 +24,7 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 # ── Defaults ──────────────────────────────────────────────────────────────
 stage=1
 stop_stage=11
-ngpu=4
+ngpu=2 #4
 nj=64
 python=python3
 
@@ -74,7 +74,7 @@ _voc_exp_suffix() {
 }
 
 fp_suffix=$(_exp_suffix "${fp_config}")
-fp_exp=exp/speech_cleaner_fp_${fp_suffix}_new
+fp_exp=exp/speech_cleaner_fp_${fp_suffix}_8
 
 voc_suffix=$(_voc_exp_suffix "${voc_pretrain_config}")
 voc_pretrain_exp=exp/speech_cleaner_voc_pretrain_${voc_suffix}
@@ -201,15 +201,15 @@ fi
 # fi
 if [ ${stage} -le 7 ] && [ ${stop_stage} -ge 7 ]; then
     log "Stage 7: Vocoder pretrain (GT SSL features)"
-    ${cuda_cmd} --gpu ${ngpu} "exp/speech_cleaner_voc_pretrain_xeus_multi_all_frame_dynamic/train.log" \
+    ${cuda_cmd} --gpu ${ngpu} "exp/speech_cleaner_voc_pretrain_xeus_multi_all_utterance_dynamic/train.log" \
     ${python} -m espnet2.bin.enh_train_speech_cleaner \
         --task sc_gan \
-        --config "conf/train_speech_cleaner_voc_pretrain_xeus.yaml" \
+        --config "conf/train_speech_cleaner_voc_pretrain_xeus_utterance.yaml" \
         --train_data_path_and_name_and_type "data/train_voc/wav.scp,speech_ref1,sound" \
         --valid_data_path_and_name_and_type "data/dev_voc/wav.scp,speech_ref1,sound" \
-        --train_shape_file "exp/speech_cleaner_voc_pretrain_xeus_multi_all_frame_dynamic/train/speech_ref1_shape" \
-        --valid_shape_file "exp/speech_cleaner_voc_pretrain_xeus_multi_all_frame_dynamic/valid/speech_ref1_shape" \
-        --output_dir "exp/speech_cleaner_voc_pretrain_xeus_multi_all_frame_dynamic" \
+        --train_shape_file "exp/speech_cleaner_voc_pretrain_xeus_multi_all_utterance_dynamic/train/speech_ref1_shape" \
+        --valid_shape_file "exp/speech_cleaner_voc_pretrain_xeus_multi_all_utterance_dynamic/valid/speech_ref1_shape" \
+        --output_dir "exp/speech_cleaner_voc_pretrain_xeus_multi_all_utterance_dynamic" \
         --ngpu 2 \
         --multiprocessing_distributed true \
         --unused_parameters true \
@@ -258,26 +258,26 @@ fi
 #         --resume true
 # fi
 
+
 if [ ${stage} -le 9 ] && [ ${stop_stage} -ge 9 ]; then
     log "Stage 9: Vocoder finetune (predicted SSL features)"
-    ${cuda_cmd} --gpu ${ngpu} "exp/speech_cleaner_voc_finetune_xeus_multi_all_frame_dynamic_again/train.log" \
+    ${cuda_cmd} --gpu ${ngpu} "exp/speech_cleaner_voc_finetune_xeus_multi_all_utterance_dynamic_again/train.log" \
     ${python} -m espnet2.bin.enh_train_speech_cleaner \
         --task sc_gan \
-        --config "conf/train_speech_cleaner_voc_finetune_xeus.yaml" \
+        --config "conf/train_speech_cleaner_voc_finetune_xeus_utterance.yaml" \
         --fp_model_path "exp/speech_cleaner_fp_xeus_multi_all_real/valid.loss.best.pth" \
-        --init_param "exp/speech_cleaner_voc_pretrain_xeus_multi_all_frame_dynamic/valid.stoi.best.pth:vocoder:vocoder" \
-        --init_param "exp/speech_cleaner_voc_pretrain_xeus_multi_all_frame_dynamic/valid.stoi.best.pth:discriminator:discriminator" \
-        --init_param "exp/speech_cleaner_voc_pretrain_xeus_multi_all_frame_dynamic/valid.stoi.best.pth:layer_router:layer_router" \
-        --output_dir "exp/speech_cleaner_voc_finetune_xeus_multi_all_frame_dynamic_again" \
+        --init_param "exp/speech_cleaner_voc_pretrain_xeus_multi_all_utterance_dynamic/valid.stoi.best.pth:vocoder:vocoder" \
+        --init_param "exp/speech_cleaner_voc_pretrain_xeus_multi_all_utterance_dynamic/valid.stoi.best.pth:discriminator:discriminator" \
+        --init_param "exp/speech_cleaner_voc_pretrain_xeus_multi_all_utterance_dynamic/valid.stoi.best.pth:layer_router:layer_router" \
+        --output_dir "exp/speech_cleaner_voc_finetune_xeus_multi_all_utterance_dynamic_again" \
         --train_data_path_and_name_and_type "data/train_voc/wav.scp,speech_ref1,sound" \
         --valid_data_path_and_name_and_type "data/dev_voc/wav.scp,speech_ref1,sound" \
-        --train_shape_file "exp/speech_cleaner_voc_finetune_xeus_multi_all_frame_dynamic_again/train/speech_ref1_shape" \
-        --valid_shape_file "exp/speech_cleaner_voc_finetune_xeus_multi_all_frame_dynamic_again/valid/speech_ref1_shape" \
+        --train_shape_file "exp/speech_cleaner_voc_finetune_xeus_multi_all_utterance_dynamic_again/train/speech_ref1_shape" \
+        --valid_shape_file "exp/speech_cleaner_voc_finetune_xeus_multi_all_utterance_dynamic_again/valid/speech_ref1_shape" \
         --ngpu 2 --multiprocessing_distributed true --unused_parameters true \
         --generator_first false \
         --resume true 
 fi
-
 # # ─────────────────────────────────────────────────────────────────────────
 # # Stage 10: Inference
 # # ─────────────────────────────────────────────────────────────────────────
@@ -330,13 +330,14 @@ if [ ${stage} -le 11 ] && [ ${stop_stage} -ge 11 ]; then
         ${python} -m espnet2.bin.enh_inference_speech_cleaner \
             --fp_train_config  "exp/speech_cleaner_fp_xeus_multi_all/config.yaml" \
             --fp_model_file    "exp/speech_cleaner_fp_xeus_multi_all/valid.loss.best.pth" \
-            --voc_train_config "exp/speech_cleaner_voc_finetune_xeus_multi_all_frame_dynamic/config.yaml" \
-            --voc_model_file   "exp/speech_cleaner_voc_finetune_xeus_multi_all_frame_dynamic/valid.stoi.ave_5best.pth" \
+            --voc_train_config "exp/speech_cleaner_voc_finetune_xeus_multi_all_utterance_dynamic/config.yaml" \
+            --voc_model_file   "exp/speech_cleaner_voc_finetune_xeus_multi_all_utterance_dynamic/valid.stoi.ave_5best.pth" \
             --wav_scp          "data/libritts_${tset}_16k/wav.scp" \
-            --output_dir       "exp/restored_xeus_multi_all_frame/stoi_avg_best5/${tset}" \
+            --output_dir       "exp/restored_xeus_multi_all_utterance/stoi_avg_best5/${tset}" \
             --batch_size 1 --device cuda --dtype bfloat16
     done
 fi
+
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -1,51 +1,54 @@
 # ============================================================
 # Speech Cleaner — Stage 1: Feature Predictor Training
-# ============================================================
-# Trains SSL encoder + LoRA adapters to predict clean SSL
-# features from noisy waveforms.
-#
-# Switch SSL encoder via ssl_encoder + ssl_encoder_conf:
-#   w2v_bert2 → target_layer: 8   (Sidon paper default)
-#   xeus      → target_layer: 10? 6?
-#   wavlm     → target_layer: 6
+# On-the-fly degradation mode:
+#   - train_fp/wav.scp contains CLEAN audio paths
+#   - noisy waveform is generated in collate_fn at each step
 # ============================================================
 
 # ── SSL encoder ──────────────────────────────────────────────
-ssl_encoder: xeus          # choices: w2v_bert2 (8th) | xeus (10th?) | wavlm
+ssl_encoder: xeus
 ssl_encoder_conf:
     model_tag: xeus_checkpoint
     freeze_base: true
+    use_flash_attention: true   # true on Delta PC (flash_attn installed)
 
-# use_flash_attention: false #true
-
-target_layer: 10 #8                 # hidden state index to use as target
+use_multilayer_loss: false #true # false 
+multilayer_mode: all             # low / up / all
+target_layer: 10
 lora_rank: 64
 lora_alpha: 16
 lora_dropout: 0.1
 input_sr: 16000
 
+# ── On-the-fly degradation ────────────────────────────────────
+noise_dir: data/noise_pool       # populated by data.sh from NOISE_* in db.sh
+rir_dir:   data/rir_pool         # populated by Stage 3 (prepare_rir_pool.py)
+degrade_prob: 0.5                # probability per degradation type (Sidon: 0.5)
+online_degradation: true         # set false to use pre-degraded wav.scp
+
 # ── Optimizer ────────────────────────────────────────────────
 optim: adamw
 optim_conf:
-    lr: 8.0e-5 #4.0e-5 (espnet sidon)  #2.0e-5(sidon) 1.0e-4
+    lr: 2.0e-4 #8.0e-5
     betas: [0.9, 0.999]
     weight_decay: 0.01
     eps: 1.0e-8
 
-scheduler: null                 # constant LR for Stage 1
+scheduler: null
 
 # ── Training ─────────────────────────────────────────────────
-# Paper: 400k steps, batch size=256, 8×H200, ~4 days
-max_epoch: 40 # =58epoch
+max_epoch: 100
 batch_type: unsorted
-batch_size: 128 #64(1) #32(2) #16(4)                  # per GPU (×8 GPU ×2 accum = effective 256)
-accum_grad: 4 #2 #4 # gpu 4 x b 16 x accum 4 = 256 (=sidon) # 2 (if gpu:8)
+batch_size: 64
+accum_grad: 1         # effective batch: 4 GPU × 64 × 1 accum = 256 
+                      # Note: Sidon target effective batch = 256
+                      # 4 GPU × batch 64 × accum 1 = 256 ✓  (adjust if OOM)
 grad_clip: 1.0
-num_workers: 16 #4
+num_workers: 16        # DataLoader workers per GPU (degradation runs here)
 seed: 42
 
 # ── Validation ───────────────────────────────────────────────
-valid_batch_size: 128 #32 #16
+valid_batch_size: 64
 best_model_criterion:
     -   - valid
         - loss
@@ -54,5 +57,5 @@ keep_nbest_models: 3
 log_interval: 200
 use_amp: true
 
-max_duration: 8.0 #20.0  # random crop threshold (seconds) in forward()
+max_duration: 20.0    # max crop duration (seconds) — Sidon uses 20s
 num_att_plot: 0

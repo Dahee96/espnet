@@ -1,184 +1,204 @@
 #!/usr/bin/env bash
-# local/data.sh
-# Data preparation for Speech Cleaner (Sidon-based) recipe.
+# local/data.sh — Speech Cleaner data preparation (Samsung PC)
 #
-# Reads DATASET_* and NOISE_* variables already exported by db.sh via run.sh.
-# SR is hardcoded here per dataset (not in db.sh) following ESPnet convention.
-# To add a new dataset: (1) add path in db.sh, (2) add its SR in _dataset_sr().
+# Required (export from db.sh):
+#   DATASET_LIBRITTS_R  /DB/LibriTTS_R    24kHz
+#   DATASET_EARS        /DB/ears          48kHz  p001-p107
+#   DATASET_VCTK_DEMAND /DB/VCTK_DEMAND   48kHz  clean dirs only
 #
 # Outputs:
-#   data/train_fp/wav.scp     ALL datasets → Feature Predictor (will be → 16k)
-#   data/dev_fp/wav.scp       LibriTTS-R dev → FP validation
-#   data/train_voc/wav.scp    48kHz datasets ONLY → Vocoder (native, no upsample)
-#   data/dev_voc/wav.scp      48kHz dev proxy
-#   data/noise_pool/          merged symlinks from all NOISE_* dirs
-#   data/libritts_{test-clean,test-other}/wav.scp   inference input
+#   data/train_fp   LibriTTS-R train + EARS p001-p096 + VCTK clean train
+#   data/dev_fp     LibriTTS-R dev  + EARS p097-p107 + VCTK clean test
+#   data/train_voc  EARS p001-p096  + VCTK clean train  (48kHz only, no LibriTTS-R)
+#   data/dev_voc    EARS p097-p107  + VCTK clean test   (48kHz only, no LibriTTS-R)
+#   data/noise_pool symlinks from all NOISE_* dirs
 
 set -euo pipefail
 log() { echo "[data.sh $(date '+%H:%M:%S')] $*"; }
 
-# ── Known sample rates per DATASET_* variable name ────────────────────────
-# Add new datasets here when extending the recipe.
-_dataset_sr() {
-    case "$1" in
-        DATASET_LIBRITTS_R)   echo 24000 ;;
-        DATASET_JVS)          echo 24000 ;;
-        DATASET_FLEURS_R)     echo 24000 ;;
-        DATASET_VCTK)         echo 48000 ;;
-        DATASET_EARS)         echo 48000 ;;
-        DATASET_EXPRESSO)     echo 48000 ;;
-        DATASET_HIFICAPTAIN)  echo 48000 ;;
-        DATASET_JSUT)         echo 48000 ;;
-        DATASET_BIBLETTS)     echo 48000 ;;
-        *)                    echo 0     ;;
-    esac
-}
+# ── Validate required variables ────────────────────────────────────────────
+for _var in DATASET_LIBRITTS_R DATASET_EARS DATASET_VCTK_DEMAND; do
+    _val="${!_var:-}"
+    [ -n "${_val}" ] && [ -d "${_val}" ] || {
+        log "ERROR: ${_var} not set or not a directory (value: '${_val:-<unset>}')"
+        exit 1
+    }
+done
 
-# ── Find audio files under a directory ────────────────────────────────────
-_find_audio() {
-    find "$1" \( -name "*.wav" -o -name "*.flac" \) \
-        | grep -v "_original\.wav" | sort
-}
-
-# ── Build Kaldi-format dir from a file listing one audio path per line ────
+# ─────────────────────────────────────────────────────────────────────────
+# _make_kaldi INPUT OUT
+#   INPUT: file with 3 fields per line:  uttid  wavpath  speaker
+#   Writes wav.scp, utt2spk, spk2utt into OUT/
+# ─────────────────────────────────────────────────────────────────────────
 _make_kaldi() {
-    local flist=$1 out=$2
+    local input=$1 out=$2
     mkdir -p "${out}"
-    awk '{n=split($0,a,"/"); f=a[n]; spk=a[n-1];
-          sub(/\.(wav|flac)$/,"",f); gsub(/_restored$/,"",f);
-          uttid=spk"_"f; gsub(/[^A-Za-z0-9_-]/,"_",uttid);
-          print uttid, $0}' "${flist}" | sort -u > "${out}/wav.scp"
-    awk '{u=$1; n=split(u,p,"_"); print $1, p[1]}' \
-        "${out}/wav.scp" | sort -u > "${out}/utt2spk"
-    python3 - "${out}" <<'PY'
-import sys; from collections import defaultdict
-d=defaultdict(list)
-[d[s].append(u) for l in open(sys.argv[1]+"/utt2spk") for u,s in [l.strip().split()]]
-open(sys.argv[1]+"/spk2utt","w").writelines(s+" "+" ".join(sorted(d[s]))+"\n" for s in sorted(d))
-PY
-    log "  $(wc -l < ${out}/wav.scp) utts → ${out}"
+    awk '{print $1, $2}' "${input}" | sort -u > "${out}/wav.scp"
+    awk '{print $1, $3}' "${input}" | sort -u > "${out}/utt2spk"
+    awk '{
+        spk=$2; utt=$1
+        spk2utt[spk] = (spk in spk2utt) ? spk2utt[spk]" "utt : utt
+    } END {
+        for (s in spk2utt) print s, spk2utt[s]
+    }' "${out}/utt2spk" | sort > "${out}/spk2utt"
+    log "  $(wc -l < "${out}/wav.scp") utts → ${out}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────
-# 1. LibriTTS-R  (mandatory — provides the dev split)
+# _collect_libritts_r SUBSET [SUBSET ...]
+#   Emits: "ltr_{spk}_{stem}  /path/file  {spk}"
+#   Speaker = two levels up from file (reader directory)
 # ─────────────────────────────────────────────────────────────────────────
-[ -n "${DATASET_LIBRITTS_R:-}" ] && [ -d "${DATASET_LIBRITTS_R}" ] \
-    || { log "ERROR: DATASET_LIBRITTS_R not set or missing."; exit 1; }
+_collect_libritts_r() {
+    for sub in "$@"; do
+        local d="${DATASET_LIBRITTS_R}/${sub}"
+        [ -d "${d}" ] || { log "  SKIP LibriTTS-R/${sub}"; continue; }
+        find "${d}" \( -name "*.wav" -o -name "*.flac" \) | sort
+    done | awk '{
+        n=split($0,a,"/"); fname=a[n]; spk=a[n-2]
+        sub(/\.(wav|flac)$/, "", fname)
+        gsub(/[^A-Za-z0-9_-]/, "_", fname)
+        gsub(/[^A-Za-z0-9_-]/, "_", spk)
+        print "ltr_"spk"_"fname, $0, spk
+    }'
+}
 
-log "LibriTTS-R: ${DATASET_LIBRITTS_R}"
+# ─────────────────────────────────────────────────────────────────────────
+# _collect_ears train|dev
+#   train → p001-p096  (90%)
+#   dev   → p097-p107  (10%)
+#   Emits: "ears_{spk}_{stem}  /path/file  {spk}"
+# ─────────────────────────────────────────────────────────────────────────
+_collect_ears() {
+    local split=$1
+    find "${DATASET_EARS}" -mindepth 1 -maxdepth 1 -type d -name 'p[0-9][0-9][0-9]' | \
+    sort | while IFS= read -r spk_dir; do
+        spk=$(basename "${spk_dir}")
+        # awk converts "097" → 97 (no octal), safe for leading-zero speaker nums
+        num=$(echo "${spk}" | awk '{n=$0; sub(/^p/,"",n); print n+0}')
+        if   { [ "${split}" = "train" ] && [ "${num}" -le 96 ]; } \
+          || { [ "${split}" = "dev"   ] && [ "${num}" -ge 97 ]; }; then
+            find "${spk_dir}" \( -name "*.wav" -o -name "*.flac" \) | sort
+        fi
+    done | awk '{
+        n=split($0,a,"/"); fname=a[n]; spk=a[n-1]
+        sub(/\.(wav|flac)$/, "", fname)
+        gsub(/[^A-Za-z0-9_-]/, "_", fname)
+        print "ears_"spk"_"fname, $0, spk
+    }'
+}
 
-tmp_ltr_train=$(mktemp); tmp_ltr_dev=$(mktemp)
-for sub in train-clean-100 train-clean-360 train-other-500; do
-    src="${DATASET_LIBRITTS_R}/${sub}"
-    [ -d "${src}" ] && _find_audio "${src}" >> "${tmp_ltr_train}" \
-                    || log "  SKIP ${sub}"
+# ─────────────────────────────────────────────────────────────────────────
+# _collect_vctk_clean SUBDIR [SUBDIR ...]
+#   Only clean_* subdirs accepted; noisy_* are rejected with error.
+#   Speaker extracted from filename prefix: p225_001.wav → p225
+#   Works for both flat and speaker-subdir layouts.
+#   Emits: "vctk_{spk}_{stem}  /path/file  {spk}"
+# ─────────────────────────────────────────────────────────────────────────
+_collect_vctk_clean() {
+    for sub in "$@"; do
+        case "${sub}" in
+            noisy_*|mix_*)
+                log "ERROR: noisy/mix dir '${sub}' must not be included"; exit 1 ;;
+        esac
+        local d="${DATASET_VCTK_DEMAND}/${sub}"
+        [ -d "${d}" ] || { log "  SKIP VCTK_DEMAND/${sub}"; continue; }
+        find "${d}" \( -name "*.wav" -o -name "*.flac" \) | sort
+    done | awk '{
+        n=split($0,a,"/"); fname=a[n]
+        sub(/\.(wav|flac)$/, "", fname)
+        # Speaker = first "_"-delimited token of filename: p225_001 → p225
+        split(fname, sp, "_"); spk=sp[1]
+        gsub(/[^A-Za-z0-9_-]/, "_", fname)
+        print "vctk_"spk"_"fname, $0, spk
+    }'
+}
+
+# ─────────────────────────────────────────────────────────────────────────
+# Collect
+# ─────────────────────────────────────────────────────────────────────────
+tmp=$(mktemp -d); trap "rm -rf ${tmp}" EXIT
+
+log "--- LibriTTS-R train (train-clean-100/360, train-other-500) ---"
+_collect_libritts_r train-clean-100 train-clean-360 train-other-500 \
+    > "${tmp}/ltr_train"
+log "  $(wc -l < "${tmp}/ltr_train") utts"
+
+log "--- LibriTTS-R dev (dev-clean, dev-other) ---"
+_collect_libritts_r dev-clean dev-other > "${tmp}/ltr_dev"
+log "  $(wc -l < "${tmp}/ltr_dev") utts"
+
+log "--- EARS train (p001-p096) ---"
+_collect_ears train > "${tmp}/ears_train"
+log "  $(wc -l < "${tmp}/ears_train") utts"
+
+log "--- EARS dev (p097-p107) ---"
+_collect_ears dev > "${tmp}/ears_dev"
+log "  $(wc -l < "${tmp}/ears_dev") utts"
+
+log "--- VCTK_DEMAND clean train (28spk + 56spk) ---"
+_collect_vctk_clean clean_trainset_28spk_wav clean_trainset_56spk_wav \
+    > "${tmp}/vctk_train"
+log "  $(wc -l < "${tmp}/vctk_train") utts"
+
+log "--- VCTK_DEMAND clean dev (testset) ---"
+_collect_vctk_clean clean_testset_wav > "${tmp}/vctk_dev"
+log "  $(wc -l < "${tmp}/vctk_dev") utts"
+
+# Sanity check: none should be empty
+for _f in ltr_train ltr_dev ears_train ears_dev vctk_train vctk_dev; do
+    [ -s "${tmp}/${_f}" ] || { log "ERROR: ${_f} is empty — check paths"; exit 1; }
 done
-for sub in dev-clean dev-other; do
-    src="${DATASET_LIBRITTS_R}/${sub}"
-    [ -d "${src}" ] && _find_audio "${src}" >> "${tmp_ltr_dev}" \
-                    || log "  SKIP ${sub}"
-done
 
 # ─────────────────────────────────────────────────────────────────────────
-# 2. Other datasets
+# Assemble Kaldi dirs
 # ─────────────────────────────────────────────────────────────────────────
-tmp_fp_extra=$(mktemp)    # non-LibriTTS-R audio for FP train
-tmp_voc_train=$(mktemp)   # 48kHz audio for VOC train
-tmp_voc_dev=$(mktemp)     # 48kHz audio for VOC dev (proxy)
+log "Building data/train_fp  (LibriTTS-R + EARS train + VCTK clean train) ..."
+cat "${tmp}/ltr_train" "${tmp}/ears_train" "${tmp}/vctk_train" \
+    | sort -u > "${tmp}/fp_train"
+_make_kaldi "${tmp}/fp_train" data/train_fp
 
-for ds_var in $(compgen -v | grep '^DATASET_' | sort); do
-    [ "${ds_var}" = "DATASET_LIBRITTS_R" ] && continue
-    ds_dir="${!ds_var:-}"
-    [ -z "${ds_dir}" ] && continue
-    [ -d "${ds_dir}" ] || { log "SKIP ${ds_var}: not found"; continue; }
+log "Building data/dev_fp  (LibriTTS-R dev + EARS dev + VCTK clean dev) ..."
+cat "${tmp}/ltr_dev" "${tmp}/ears_dev" "${tmp}/vctk_dev" \
+    | sort -u > "${tmp}/fp_dev"
+_make_kaldi "${tmp}/fp_dev" data/dev_fp
 
-    ds_sr=$(_dataset_sr "${ds_var}")
-    log "${ds_var} (${ds_sr} Hz): ${ds_dir}"
+log "Building data/train_voc  (EARS train + VCTK clean train, 48kHz only) ..."
+cat "${tmp}/ears_train" "${tmp}/vctk_train" \
+    | sort -u > "${tmp}/voc_train"
+_make_kaldi "${tmp}/voc_train" data/train_voc
 
-    tmp_ds=$(mktemp)
-    _find_audio "${ds_dir}" > "${tmp_ds}"
-
-    # All datasets → FP train
-    cat "${tmp_ds}" >> "${tmp_fp_extra}"
-
-    # 48kHz only → VOC
-    if [ "${ds_sr}" = "48000" ]; then
-        head -200 "${tmp_ds}" >> "${tmp_voc_dev}"   # proxy dev
-        cat "${tmp_ds}"        >> "${tmp_voc_train}"
-    fi
-    rm -f "${tmp_ds}"
-done
+log "Building data/dev_voc  (EARS dev + VCTK clean dev, 48kHz only) ..."
+cat "${tmp}/ears_dev" "${tmp}/vctk_dev" \
+    | sort -u > "${tmp}/voc_dev"
+_make_kaldi "${tmp}/voc_dev" data/dev_voc
 
 # ─────────────────────────────────────────────────────────────────────────
-# 3. Build output Kaldi dirs
-# ─────────────────────────────────────────────────────────────────────────
-log "Building data/train_fp ..."
-cat "${tmp_ltr_train}" "${tmp_fp_extra}" | sort -u > /tmp/_sc_fp_train
-_make_kaldi /tmp/_sc_fp_train data/train_fp
-
-log "Building data/dev_fp ..."
-_make_kaldi "${tmp_ltr_dev}" data/dev_fp
-
-log "Building data/train_voc ..."
-if [ -s "${tmp_voc_train}" ]; then
-    _make_kaldi "${tmp_voc_train}" data/train_voc
-else
-    log "WARNING: No 48kHz datasets found — data/train_voc is empty."
-    mkdir -p data/train_voc; > data/train_voc/wav.scp
-fi
-
-log "Building data/dev_voc ..."
-if [ -s "${tmp_voc_dev}" ]; then
-    _make_kaldi "${tmp_voc_dev}" data/dev_voc
-else
-    log "WARNING: No 48kHz dev data — using first 200 utts from train_voc."
-    mkdir -p data/dev_voc
-    head -200 data/train_voc/wav.scp | awk '{print $2}' > "${tmp_voc_dev}" || true
-    _make_kaldi "${tmp_voc_dev}" data/dev_voc
-fi
-
-rm -f "${tmp_ltr_train}" "${tmp_ltr_dev}" "${tmp_fp_extra}" \
-      "${tmp_voc_train}" "${tmp_voc_dev}" /tmp/_sc_fp_train
-
-# ─────────────────────────────────────────────────────────────────────────
-# 4. Noise pool  (merge all NOISE_* dirs via symlinks)
+# Noise pool
 # ─────────────────────────────────────────────────────────────────────────
 log "Building data/noise_pool ..."
 mkdir -p data/noise_pool
-noise_found=0
-for noise_var in $(compgen -v | grep '^NOISE_' | sort); do
-    noise_dir="${!noise_var:-}"
-    [ -z "${noise_dir}" ] && continue
-    [ -d "${noise_dir}" ] || { log "  SKIP ${noise_var}: not found"; continue; }
-    log "  ${noise_var}: ${noise_dir}"
-    find "${noise_dir}" \( -name "*.wav" -o -name "*.flac" \) \
-        | while read -r f; do
-            ln -sf "${f}" "data/noise_pool/${noise_var}_$(basename ${f})" 2>/dev/null || true
+_noise_found=0
+for _var in $(compgen -v | grep '^NOISE_' | sort); do
+    _dir="${!_var:-}"
+    [ -z "${_dir}" ] && continue
+    [ -d "${_dir}" ] || { log "  SKIP ${_var}: not found"; continue; }
+    log "  ${_var}: ${_dir}"
+    find "${_dir}" \( -name "*.wav" -o -name "*.flac" \) | \
+        while IFS= read -r f; do
+            ln -sf "${f}" "data/noise_pool/${_var}_$(basename "${f}")" 2>/dev/null || true
         done
-    noise_found=1
+    _noise_found=1
 done
-[ "${noise_found}" -eq 0 ] && log "WARNING: No noise sources found."
-log "  noise pool: $(ls data/noise_pool | wc -l) files"
+[ "${_noise_found}" -eq 0 ] && log "WARNING: No NOISE_* variables set."
+log "  $(ls data/noise_pool | wc -l) noise files"
 
 # ─────────────────────────────────────────────────────────────────────────
-# 5. LibriTTS ORIGINAL test sets  (inference input — not restored)
+# Summary
 # ─────────────────────────────────────────────────────────────────────────
-if [ -n "${LIBRITTS:-}" ] && [ -d "${LIBRITTS}" ]; then
-    for s in test-clean test-other; do
-        src="${LIBRITTS}/${s}"
-        [ -d "${src}" ] || { log "SKIP LibriTTS ${s}"; continue; }
-        tmp_t=$(mktemp)
-        _find_audio "${src}" > "${tmp_t}"
-        _make_kaldi "${tmp_t}" "data/libritts_${s}"
-        rm -f "${tmp_t}"
-    done
-else
-    log "SKIP: LIBRITTS not set or missing (needed only for inference)"
-fi
-
-log "Done."
-log "  FP  train : $(wc -l < data/train_fp/wav.scp) utts"
-log "  FP  dev   : $(wc -l < data/dev_fp/wav.scp) utts"
-log "  VOC train : $(wc -l < data/train_voc/wav.scp) utts"
-log "  VOC dev   : $(wc -l < data/dev_voc/wav.scp) utts"
-log "  noise pool: $(ls data/noise_pool | wc -l) files"
+log "=== Done ==="
+log "  train_fp : $(wc -l < data/train_fp/wav.scp) utts"
+log "  dev_fp   : $(wc -l < data/dev_fp/wav.scp) utts"
+log "  train_voc: $(wc -l < data/train_voc/wav.scp) utts"
+log "  dev_voc  : $(wc -l < data/dev_voc/wav.scp) utts"
+log "  noise_pool: $(ls data/noise_pool | wc -l) files"

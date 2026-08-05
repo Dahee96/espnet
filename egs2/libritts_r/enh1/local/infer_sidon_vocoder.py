@@ -12,18 +12,27 @@ Usage:
         --fp_checkpoint exp/speech_cleaner_fp_w2v_bert2/valid.loss.best.pth \
         --fp_config     exp/speech_cleaner_fp_w2v_bert2/config.yaml \
         --sidon_dir /home/samsung/.cache/huggingface/hub/models--sarulab-speech--sidon-v0.1/snapshots/b3b02d8bbd55fdbc410e6e46e76ef95ace4fbf52 \
-        --wav_scp       data/ami_sdm_test/wav.scp \
-        --segments      data/ami_sdm_test/segments \
-        --out_dir       exp/restored_sidon_ami_sdm_test \
+        --wav_scp       data/fisher_longform/wav.scp \
+        --segments      data/fisher_longform/segments \
+        --out_dir       exp/restored_espnet-sidon/fisher_longform \
+        --device        cuda
+    # Long-form (fisher_longform)
+CUDA_VISIBLE_DEVICES=1    python3 local/infer_sidon_vocoder.py \
+        --fp_checkpoint exp_ver1/speech_cleaner_fp_w2v_bert2/valid.loss.best.pth \
+        --fp_config     exp_ver1/speech_cleaner_fp_w2v_bert2/config.yaml \
+        --sidon_dir /home/samsung/.cache/huggingface/hub/models--sarulab-speech--sidon-v0.1/snapshots/b3b02d8bbd55fdbc410e6e46e76ef95ace4fbf52 \
+        --wav_scp       data/fisher_longform/wav.scp \
+        --out_dir       exp/restored_espnet-sidon/fisher_longform \
+        --chunk_sec     20.0 \
         --device        cuda
 
-    # Long-form (ami_sdm_longform)
+    # Long-form (ami_ihm_longform)
 CUDA_VISIBLE_DEVICES=2    python3 local/infer_sidon_vocoder.py \
-        --fp_checkpoint exp/speech_cleaner_fp_w2v_bert2/valid.loss.best.pth \
-        --fp_config     exp/speech_cleaner_fp_w2v_bert2/config.yaml \
+        --fp_checkpoint exp_ver1/speech_cleaner_fp_w2v_bert2/valid.loss.best.pth \
+        --fp_config     exp_ver1/speech_cleaner_fp_w2v_bert2/config.yaml \
         --sidon_dir /home/samsung/.cache/huggingface/hub/models--sarulab-speech--sidon-v0.1/snapshots/b3b02d8bbd55fdbc410e6e46e76ef95ace4fbf52 \
-        --wav_scp       data/ami_sdm_longform/wav.scp \
-        --out_dir       exp/restored_sidon_ami_sdm_longform \
+        --wav_scp       data/ami_ihm_longform/wav.scp \
+        --out_dir       exp/restored_espnet-sidon/ami_ihm_longform \
         --chunk_sec     20.0 \
         --device        cuda
 

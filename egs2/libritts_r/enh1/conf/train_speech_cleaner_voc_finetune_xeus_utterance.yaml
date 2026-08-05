@@ -21,13 +21,13 @@
 # ============================================================
 
 # ── SSL encoder (same tag as Stage 1/2) ──────────────────────
-ssl_encoder: w2v_bert2
+ssl_encoder: xeus
 ssl_encoder_conf:
-    model_tag: facebook/w2v-bert-2.0
+    model_tag: xeus_checkpoint
     freeze_base: true
     use_flash_attention: true
 
-target_layer: 8
+target_layer: 10
 lora_rank: 64
 lora_alpha: 16
 lora_dropout: 0.1
@@ -42,13 +42,14 @@ online_degradation: true         # set false to use pre-degraded wav.scp
 # ── Vocoder architecture ─────────────────────────────────────
 ssl_dim: 1024
 
-use_multilayer_feat: true #false
+use_multilayer_loss: true
+use_multilayer_feat: true
 multilayer_mode: all
+layer_weighting: utterance_dynamic   # uniform | global_learnable | utterance_dynamic | frame_dynamic
 # ── Stage selector ───────────────────────────────────────────
 use_predicted_feat: true        # ← Stage 3: predicted SSL features
 vocoder_type: dac       # choices: hifigan | dac
                                 #   (noisy waveform → SSL encoder → predicted feat)
-
 
 # ── Loss weights ─────────────────────────────────────────────
 # Sidon: regression_loss=15.0, adv_gen=2.0, adv_feature=1.0
@@ -59,25 +60,25 @@ fm_loss_weight: 1.0
 # ── Optimizers ───────────────────────────────────────────────
 optim: adamw
 optim_conf:
-    lr: 1.0e-4
+    lr: 2.0e-4 #1.0e-4
     betas: [0.8, 0.98]
     weight_decay: 0.01
 
 scheduler: exponentiallr
 scheduler_conf:
-    gamma: 0.999996             # Sidon: 0.999996
+    gamma: 0.999992 #0.999996             # Sidon: 0.999996
 
 # ── Training ─────────────────────────────────────────────────
 # Paper: 280k steps, batch_size=32, 8×H200, ~4 days
-max_epoch: 20 
+max_epoch: 100 #70
 batch_type: unsorted
-batch_size: 8                   # per GPU  (×8 GPUs = effective bs 32)
+batch_size: 32 #8                   # per GPU  (×8 GPUs = effective bs 32)
 grad_clip: 1.0
 num_workers: 16
 seed: 42
 
 # ── Validation ───────────────────────────────────────────────
-valid_batch_size: 8
+valid_batch_size: 32 #8
 # best_model_criterion:
 #     -   - valid
 #         - loss_G
@@ -86,11 +87,17 @@ best_model_criterion:
     -   - valid
         - dnsmos_ovrl
         - max
-keep_nbest_models: 3
+    -   - valid
+        - stoi
+        - max
+    -   - valid
+        - loss_G
+        - min
+keep_nbest_models: 5
 log_interval: 100
 
 # use_amp: false #true(fp16)
 use_amp: false # espnet gan_trainer.py uses float16
 
-max_duration: 20.0  # random crop threshold (seconds) in forward()
+max_duration: 2.0  # random crop threshold (seconds) in forward()
 num_att_plot: 0

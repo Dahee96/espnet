@@ -10,3 +10,27 @@ wav/
 *.bin
 *.safetensors
 xeus_checkpoint/
+
+# Local experiment artifacts
+exp/
+exp_*/
+dump/
+data/
+versa_cache/
+__pycache__/
+*.pyc
+*.bak
+check_*.py
+diagnostic_*.py
+degradation_check.py
+efficiency_results.log
+enh_inference_speech_cleaner_test.py
+fp_*.py
+frame_*.py
+measure_*.py
+fun_flash_attention.sh
+run_flash_attention.sh
+run_ms.sh
+slt_figure/
+scoring_slt/
+data_ver1/

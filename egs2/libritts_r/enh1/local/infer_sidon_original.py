@@ -43,10 +43,17 @@ Usage:
         --device     cuda
 
     # Long-form (ami_sdm_longform, no segments file)
-CUDA_VISIBLE_DEVICES=2    python3 local/infer_sidon_original.py \
+CUDA_VISIBLE_DEVICES=1    python3 local/infer_sidon_original.py \
         --sidon_dir /home/samsung/.cache/huggingface/hub/models--sarulab-speech--sidon-v0.1/snapshots/b3b02d8bbd55fdbc410e6e46e76ef95ace4fbf52 \
-        --wav_scp    data/ami_sdm_longform/wav.scp \
-        --out_dir    exp/restored_sidon_orig_ami_sdm_longform \
+        --wav_scp    data/ami_ihm_longform/wav.scp \
+        --out_dir    exp/restored_official-sidon/ami_ihm_longform \
+        --chunk_sec  20.0 \
+        --device     cuda
+
+CUDA_VISIBLE_DEVICES=3    python3 local/infer_sidon_original.py \
+        --sidon_dir /home/samsung/.cache/huggingface/hub/models--sarulab-speech--sidon-v0.1/snapshots/b3b02d8bbd55fdbc410e6e46e76ef95ace4fbf52 \
+        --wav_scp    data/fisher_longform/wav.scp \
+        --out_dir    exp/restored_official-sidon/fisher_longform \
         --chunk_sec  20.0 \
         --device     cuda
 
@@ -244,7 +251,7 @@ def preprocess(wav_np: np.ndarray, device: str) -> dict:
     wav_t   = torch.from_numpy(wav_np).float()
     max_val = wav_t.abs().max().clamp_min(1e-6)
     wav_t   = 0.9 * wav_t / max_val
-    wav_t   = F.pad(wav_t, (160, 160) 
+    wav_t   = F.pad(wav_t, (160, 160) )
     return _extract_fbank_features(wav_t, device)
 
 
